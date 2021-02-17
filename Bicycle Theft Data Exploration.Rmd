@@ -1,0 +1,87 @@
+---
+title: "Bicycle Theft Data Exploration"
+output: html_notebook
+---
+
+```{r, results= 'hide'}
+library(tidyverse)
+library(ggplot2)
+library(readr)
+
+```
+
+# Step 1: Import Data
+```{r}
+bt_raw <-  read.csv("bicycle-thefts-2014-2019.csv")
+bt_meta_raw <- read.csv("Bicycle_Thefts_Metadata.csv")
+```
+
+## Explore Location Type variable 
+```{r}
+bt_location_type <- bt_raw %>% 
+  group_by(Location_Type) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  arrange(desc(count))
+
+total_theft <- sum(bt_location_type$count)
+
+bt_location_type <- bt_location_type %>% 
+  mutate(percent_theft = round(count/total_theft, digits = 3))
+
+```
+
+## Explore Premise Type
+```{r}
+bt_p_type <- bt_raw %>% 
+  group_by(Premise_Type) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  arrange(desc(count))
+```
+
+## Explore Bicycle Specific Information
+```{r}
+bt_bike <- bt_raw %>% 
+  select(Bike_Make, Bike_Model, Bike_Type, Bike_Speed, Bike_Colour, Cost_of_Bike, Status)
+```
+
+
+
+### By bike type
+```{r}
+bt_bike %>% 
+  group_by(Bike_Type) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  arrange(desc(count)) %>% 
+  mutate(percent_type = round(count/sum(count), digits = 3))
+
+# sort type of bike by status 
+bt_bike %>% 
+  group_by(Bike_Type, Status) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  arrange(desc(Status)) %>% 
+  filter(Status != "UNKNOWN") %>% 
+  group_by(Bike_Type) %>% 
+  ggplot(aes(x = Bike_Type, y = count, fill = Status)) + 
+  geom_bar(stat = "Identity", position =  "dodge")
+
+
+# Which type of bike is easier to retrieve 
+bt_bike %>% 
+  group_by(Bike_Type, Status) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  arrange(desc(Status)) %>% 
+  filter(Status == "RECOVERED") %>% 
+  group_by(Bike_Type) %>% 
+  ggplot(aes(x = Bike_Type, y = count)) + 
+  geom_bar(stat = "Identity")
+
+
+```
+
+### By cost 
+```{r}
+cost_bike <- bt_bike %>% 
+  ggplot(aes(x = Cost_of_Bike, y = )) 
+```
+
+
