@@ -1,5 +1,5 @@
 ---
-title: "Bicycle Theft Data Exploration"
+title: "Bicycle_Theft_Data_Exploration"
 output: html_notebook
 ---
 
@@ -7,7 +7,9 @@ output: html_notebook
 library(tidyverse)
 library(ggplot2)
 library(readr)
-
+library(ggthemes)
+library(sf)
+library(opendatatoronto)
 ```
 
 # Step 1: Import Data
@@ -16,8 +18,9 @@ bt_raw <-  read.csv("bicycle-thefts-2014-2019.csv")
 bt_meta_raw <- read.csv("Bicycle_Thefts_Metadata.csv")
 ```
 
-## Explore Location Type variable 
+
 ```{r}
+## Explore Location Type variable 
 bt_location_type <- bt_raw %>% 
   group_by(Location_Type) %>% 
   summarise(count = n(), .groups = 'drop') %>% 
@@ -26,28 +29,44 @@ bt_location_type <- bt_raw %>%
 total_theft <- sum(bt_location_type$count)
 
 bt_location_type <- bt_location_type %>% 
-  mutate(percent_theft = round(count/total_theft, digits = 3))
+  mutate(percent_theft = round(count/total_theft, digits = 3)) %>% 
+  arrange(desc(percent_theft))
+
+# Location of theft, define high theft location to be location where that location make up more than 1 percent of the total reported theft cases. 
+high_theft_loc <- bt_location_type %>% 
+  filter(percent_theft >= 0.01)
+
+high_theft_loc %>%
+  ggplot(aes(x = reorder(Location_Type, percent_theft), y = percent_theft)) + 
+  geom_bar(stat =  "Identity") + 
+  coord_flip()
+
 
 ```
 
-## Explore Premise Type
+
 ```{r}
+## Explore Premise Type
 bt_p_type <- bt_raw %>% 
   group_by(Premise_Type) %>% 
   summarise(count = n(), .groups = 'drop') %>% 
   arrange(desc(count))
+
+bt_p_type 
 ```
 
-## Explore Bicycle Specific Information
+
 ```{r}
+## Explore Bicycle Specific Information
 bt_bike <- bt_raw %>% 
   select(Bike_Make, Bike_Model, Bike_Type, Bike_Speed, Bike_Colour, Cost_of_Bike, Status)
 ```
 
 
 
-### By bike type
+
 ```{r}
+### By bike type
 bt_bike %>% 
   group_by(Bike_Type) %>% 
   summarise(count = n(), .groups = 'drop') %>% 
@@ -61,8 +80,8 @@ bt_bike %>%
   arrange(desc(Status)) %>% 
   filter(Status != "UNKNOWN") %>% 
   group_by(Bike_Type) %>% 
-  ggplot(aes(x = Bike_Type, y = count, fill = Status)) + 
-  geom_bar(stat = "Identity", position =  "dodge")
+  ggplot(aes(x = Bike_Type, y = count)) + 
+  geom_bar(stat = "Identity")
 
 
 # Which type of bike is easier to retrieve 
@@ -78,10 +97,381 @@ bt_bike %>%
 
 ```
 
-### By cost 
+ 
 ```{r}
-cost_bike <- bt_bike %>% 
-  ggplot(aes(x = Cost_of_Bike, y = )) 
+### By cost
+cost_bike <- bt_raw %>% 
+  ggplot(aes(x = Status , y = Cost_of_Bike)) + 
+  geom_boxplot()
+
+cost_bike
+
+```
+
+
+```{r}
+### By neighberhood 
+theme_set(theme_bw())
+
+bt_raw %>%
+  group_by(Neighbourhood) %>%
+  mutate(count = n())
+
+bt_nbh <- bt_raw %>% 
+  group_by(Neighbourhood) %>% 
+  summarise(count = n(), .groups = 'drop')
+
+```
+
+
+
+# Neighberhood data 
+```{r}
+# Getting neighberhood data from opendatatoronto
+nbhoods_shape_raw <- list_package_resources("neighbourhoods") %>% 
+  get_resource()
+
+nbhoods_shape_raw <- nbhoods_shape_raw %>% 
+  rename(Neighbourhood = AREA_NAME)
+
+shape_subset <- nbhoods_shape_raw %>% 
+  select(Neighbourhood, geometry)
+
+# merge nbhoods_shape_raw and bt_nbh
+nbh_join <- bt_nbh %>% 
+  left_join(shape_subset, by = "Neighbourhood") %>% 
+  mutate(percent_theft = count/total_theft) 
+
+# summarize theft allocation in GTA area by level. Divided by quartiles. 
+summary(nbh_join$percent_theft)
+nbh_join <- nbh_join %>% 
+  mutate(level = case_when(
+    percent_theft < 0.0012046 ~ "low", 
+    percent_theft >= 0.0012046 & percent_theft < 0.002803 ~ "medium",
+    percent_theft >= 0.002803 & percent_theft < 0.0059187 ~ "high",
+    percent_theft >= 0.0059187 ~ "very high"
+  )) %>% 
+  mutate(level = fct_relevel(level, "high", after =  2))
+
+
+```
+
+
+```{r}
+# Map of bike theft severity 
+ggplot(data = nbh_join) + 
+  geom_sf(aes(geometry = geometry, fill = level)) +
+  theme_map() 
+```
+```{r}
+# look at regions with very high percentage of theft comparing to other nbh
+nbh_join %>% 
+  filter(level == "very high")
+```
+
+
+
+# Import data for bicycle parking
+```{r}
+# Import data for bicycle parking
+
+# get package
+package <- show_package("2c32f356-e0ff-4245-84ba-cc3dd71a5694")
+package
+
+# get all resources for this package
+resources <- list_package_resources("2c32f356-e0ff-4245-84ba-cc3dd71a5694")
+
+# identify datastore resources; by default, Toronto Open Data sets datastore resource format to CSV for non-geospatial and GeoJSON for geospatial resources
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+
+# load the first datastore resource as a sample
+bike_parking <- filter(datastore_resources, row_number()==1) %>% get_resource()
+bike_parking
+```
+
+```{r}
+# plot bike_parking data on map 
+ggplot() + 
+  geom_sf(data = nbh_join, aes(geometry = geometry)) + 
+  geom_sf(data = bike_parking, aes(geometry = geometry, colour = PARKING_TYPE)) + 
+  theme_void()
+
+```
+
+```{r, warningFALSE}
+# Explore reported theft time 
+bt_time <- bt_raw %>% 
+  select(Occurrence_Date, Occurrence_Month, Occurrence_Year, Hood_ID) %>% 
+  mutate(season = case_when(
+    3 <= Occurrence_Month & Occurrence_Month < 6 ~ "Spring", 
+    6 <= Occurrence_Month & Occurrence_Month < 9 ~ "Summer", 
+    9 <= Occurrence_Month & Occurrence_Month <12 ~ "Fall", 
+    12 <= Occurrence_Month | Occurrence_Month < 3 ~ "Winter"
+  )) 
+
+ bt_time %>% 
+  group_by(Occurrence_Year) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  ggplot(aes(x = Occurrence_Year, y = count)) +
+  geom_bar(stat = "Identity")
+ 
+ bt_time %>% 
+   select(Occurrence_Year, Hood_ID) %>% 
+   group_by(Hood_ID, Occurrence_Year) %>% 
+   summarise(count = n(), .groups = 'drop') %>% 
+   ggplot(aes(x = Hood_ID, y = count, group = Occurrence_Year)) + 
+   geom_bar(stat = "Identity") 
+   
+  
+```
+# Import Apartment Score Data
+
+```{r}
+# data on apartment building evaluations 
+# get package
+package <- show_package("4ef82789-e038-44ef-a478-a8f3590c3eb1")
+
+
+# get all resources for this package
+resources <- list_package_resources("4ef82789-e038-44ef-a478-a8f3590c3eb1")
+
+# identify datastore resources; by default, Toronto Open Data sets datastore resource format to CSV for non-geospatial and GeoJSON for geospatial resources
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+
+# load the first datastore resource as a sample
+a_eval <- filter(datastore_resources, row_number()==1) %>% get_resource()
+a_eval
+
+# apartment subset 
+a_sub <- a_eval %>% 
+  select(WARD, SECURITY, SCORE)
+```
+
+
+# Import Ward Shape Data 
+```{r}
+
+package <- show_package("5e7a8234-f805-43ac-820f-03d7c360b588")
+
+# get all resources for this package
+resources <- list_package_resources("5e7a8234-f805-43ac-820f-03d7c360b588")
+ 
+# identify datastore resources; by default, Toronto Open Data sets datastore resource format to CSV for non-geospatial and GeoJSON for geospatial resources
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+ 
+# load the first datastore resource as a sample
+ward_shape_raw <- filter(datastore_resources, row_number()==1) %>% get_resource()
+ward_shape_raw
+
+
+# ward subset 
+ward_sub <- ward_shape_raw %>% 
+  select(geometry, AREA_LONG_CODE) 
+
+ward_sub <- ward_sub %>% 
+  rename(WARD = AREA_LONG_CODE)
+
+
+```
+
+```{r}
+ggplot() + 
+  # geom_sf(data = ward_shape_raw, aes(geometry = geometry)) +
+  geom_sf(data = nbh_join, aes(geometry = geometry, fill = level))+
+  theme_map() 
+```
+
+
+
+```{r}
+ggplot() + 
+  geom_sf(data = ward_shape_raw, aes(geometry = geometry) ) +
+  # geom_sf(data = nbh_join, aes(geometry = geometry, fill = level))+ 
+  theme_map() 
+```
+
+```{r}
+# ward average apartment evaluation score 
+a_sub_stat <- a_sub %>% 
+  group_by(WARD) %>% 
+  mutate(SCORE = as.numeric(SCORE)) %>% 
+  mutate(SECURITY = as.numeric(SECURITY)) %>%
+  mutate_if(is.numeric, replace_na, replace = 0 )  %>%
+  arrange(WARD) 
+
+# Focus on overall score
+overall_sum <- a_sub_stat %>%
+  summarise(overall_score = mean(SCORE), .groups = 'drop') %>%
+  arrange(desc(overall_score)) %>%
+  filter(WARD != "YY")
+
+# Focus on security score only 
+security_sum <- a_sub_stat %>%
+  summarise(security_score = mean(SECURITY), .groups = 'drop') %>%
+  arrange(desc(security_score)) %>%
+  filter(WARD != "YY") 
+
+
+# summary
+summary(overall_sum$overall_score)
+summary(security_sum$security_score)
+```
+
+
+```{r}
+# overall score 
+overall_sum %>% 
+  right_join(ward_sub, by = "WARD") %>% 
+  mutate(score_level = case_when(
+    overall_score >= 75.36 ~ "Lower Risk", 
+    overall_score < 75.36 ~ "Higher Risk"
+  )) %>% 
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = score_level)) + 
+  theme_map()
+```
+
+```{r}
+security_sum %>% 
+  right_join(ward_sub, by = "WARD") %>% 
+  mutate(security_level = case_when(
+    security_score <= 2.047 ~ "Unsafe", 
+    security_score >= 2.916 ~ "Safe", 
+    security_score > 2.047 & security_score < 2.916 ~ "Normal"
+  )) %>% 
+  mutate(security_level = fct_relevel(security_level, "Normal" ,after = 1)) %>% 
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = security_level)) + 
+  theme_map()
+```
+
+
+# Import Neighberhood Crime Rate 
+```{r}
+# get package
+package <- show_package("fc4d95a6-591f-411f-af17-327e6c5d03c7")
+
+
+# get all resources for this package
+resources <- list_package_resources("fc4d95a6-591f-411f-af17-327e6c5d03c7")
+
+# identify datastore resources; by default, Toronto Open Data sets datastore resource format to CSV for non-geospatial and GeoJSON for geospatial resources
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+
+# load the first datastore resource as a sample
+Neighbourhood_Crime_Rates <- filter(datastore_resources, row_number()==1) %>% get_resource()
+Neighbourhood_Crime_Rates
+```
+
+```{r}
+# Allen's Data_Ex 
+Crime_inorder <- Neighbourhood_Crime_Rates%>%
+  arrange(Hood_ID)
+
+Crime_sub <- Crime_inorder %>% 
+  select(Hood_ID, Population, geometry) %>% 
+  mutate(Hood_ID = as.numeric(Hood_ID))
+
+bt_Hood_ID <- bt_raw %>% 
+  group_by(Hood_ID) %>% 
+  summarise(counts = n(), .groups = 'drop')
+
+# theftperc <- bt_Hood_ID %>% 
+#   mutate(theftper = round(counts/Crime_inorder$Population, digits = 3)) %>% 
+#   arrange(desc(theftper))
+
+theftperc <- bt_Hood_ID %>% 
+  left_join(Crime_sub, by = "Hood_ID") %>% 
+  mutate(theftperc = round(counts/Population, digits = 3)) %>% 
+  arrange(desc(theftperc))
+
+theftperc %>%
+  ggplot(aes(x = reorder(Hood_ID, theftperc), y = theftperc)) + 
+  geom_bar(stat =  "Identity") + 
+  coord_flip()
+
+summary(theftperc)
+
+# Plot theftperc on map
+per_join <- theftperc %>% 
+  mutate(per_level = case_when(
+    theftperc < 0.00175 ~ "low", 
+    theftperc >= 0.00175 & theftperc < 0.009 ~ "medium",
+    theftperc >= 0.009 ~ "high",
+  )) %>% 
+  mutate(per_level = fct_relevel(per_level, "low", after = 2))
+  
+per_join %>% 
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = per_level)) + 
+  theme_map()
+
+```
+
+# Import community hosing data
+```{r}
+# get package
+package <- show_package("55076653-defc-44c8-8384-9db130337438")
+
+# get all resources for this package
+resources <- list_package_resources("55076653-defc-44c8-8384-9db130337438")
+
+# identify datastore resources; by default, Toronto Open Data sets datastore resource format to CSV for non-geospatial and GeoJSON for geospatial resources
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+
+# load the first datastore resource as a sample
+com_housing <- filter(datastore_resources, row_number()==1) %>% get_resource()
+com_housing
+```
+# Bikeways 
+```{r}
+library(opendatatoronto)
+library(dplyr)
+
+# get package
+package <- show_package("ac87ebfc-d67a-4a63-9528-5474ff33cb68")
+
+
+# get all resources for this package
+resources <- list_package_resources("ac87ebfc-d67a-4a63-9528-5474ff33cb68")
+
+# identify datastore resources; by default, Toronto Open Data sets datastore resource format to CSV for non-geospatial and GeoJSON for geospatial resources
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+
+# load the first datastore resource as a sample
+Bikeways <- filter(datastore_resources, row_number()==1) %>% get_resource()
+Bikeways
+
+```
+# Final Graph 
+```{r}
+# percentage theft 
+per_join <- theftperc %>% 
+  mutate(per_level = case_when(
+    theftperc < 0.00175 ~ "low", 
+    theftperc >= 0.00175 & theftperc < 0.009 ~ "medium",
+    theftperc >= 0.009 ~ "high",
+  )) %>% 
+  mutate(per_level = fct_relevel(per_level, "low", after = 2))
+  
+per_join %>% 
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = per_level)) + 
+  theme_map()
+
+# percentage theft + bikeways 
+ggplot() + 
+  geom_sf(data = per_join, aes(geometry = geometry, fill = per_level)) + 
+  geom_sf(data = Bikeways, aes(geometry = geometry)) + 
+  theme_void()
+
+# percentage theft + bike parking 
+ggplot() + 
+  geom_sf(data = per_join, aes(geometry = geometry, fill = per_level)) + 
+  geom_sf(data = bike_parking, aes(geometry = geometry, colour = PARKING_TYPE)) + 
+  theme_void()
+
 ```
 
 

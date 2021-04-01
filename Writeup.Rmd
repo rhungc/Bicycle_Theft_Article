@@ -1,0 +1,227 @@
+---
+title: 'What Factors Contribute to Toronto Bicycle Theft?'
+author: "Ruei-Hung Chen; Zhenyu Xuan"
+subtitle: 'STA313 Assignment 2'
+output:
+  html_notebook: default
+  pdf_document: default
+fontsize: 11pt
+urlcolor: blue
+header-includes:
+- \usepackage{lastpage}
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[LO, LE]{Ruei-Hung Chen ; Zhenyu Xuan}
+- \fancyfoot[CO, CE]{\thepage \ of \pageref{LastPage}}
+---
+
+
+```{r, libraries, message=FALSE, echo=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(readr)
+library(ggthemes)
+library(sf)
+library(opendatatoronto)
+```
+
+
+```{r, getdata, eval=TRUE, echo=FALSE}
+# Step 1: Import Data
+bt_raw <-  read.csv("bicycle-thefts-2014-2019.csv")
+bt_meta_raw <- read.csv("Bicycle_Thefts_Metadata.csv")
+
+
+# Import data for bicycle parking
+package <- show_package("2c32f356-e0ff-4245-84ba-cc3dd71a5694")
+resources <- list_package_resources("2c32f356-e0ff-4245-84ba-cc3dd71a5694")
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+bike_parking <- filter(datastore_resources, row_number()==1) %>% get_resource()
+
+# Import Neighberhood Crime Rate
+package <- show_package("fc4d95a6-591f-411f-af17-327e6c5d03c7")
+resources <- list_package_resources("fc4d95a6-591f-411f-af17-327e6c5d03c7")
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+Neighbourhood_Crime_Rates <- filter(datastore_resources, row_number()==1) %>%
+  get_resource()
+
+# Import Bikeways from OpendataToronto 
+package <- show_package("ac87ebfc-d67a-4a63-9528-5474ff33cb68")
+resources <- list_package_resources("ac87ebfc-d67a-4a63-9528-5474ff33cb68")
+datastore_resources <- filter(resources, tolower(format) %in% c('csv', 'geojson'))
+Bikeways <- filter(datastore_resources, row_number()==1) %>% get_resource()
+
+```
+
+ 
+Every year in Toronto, there are a great number of bike stolen cases reported to the Toronto Police Service. To help the general cyclist community mitigate the risks, our group analyzed the data from the Public Safety Data Portal and focused on analyzing the risk factors potentially associated to bike theft.
+
+# Premise type Assessment 
+Firstly, we decided to focus on analyzing the premise type of the reported bicycle theft from the Toronto Police Service database. Using the reported cases, we summarized the number of thefts happened in each premise type and create this bar chart.
+
+```{r, echo = FALSE, fig.height=4}
+bt_p_type <- bt_raw %>% 
+  group_by(Premise_Type) %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  arrange(desc(count)) %>% 
+  mutate(premise_merge = ifelse(Premise_Type == "Apartment" | Premise_Type == "House", "Indoor", Premise_Type))
+
+bt_p_type %>% 
+  mutate(premise_merge = fct_relevel(premise_merge, "Indoor", after = 3)) %>% 
+  ggplot(aes(x = premise_merge, y = count, fill = premise_merge)) + 
+  geom_bar(stat = "identity", position =  "stack") + 
+  labs(title ="Where did most bicycle thefts take place by premise type?",
+       x = "count", 
+       y = "Premise_Type") + 
+  scale_fill_brewer(palette = "Blues") + 
+  theme(plot.title = element_text(size = 14)) 
+  
+```
+According to our summary, we noticed that lots of the bicycle thefts happened in personal apartments and houses. If we combine the two together, bicycle thefts happened the most in indoor environment, especially in local neighborhoods! Thus, we should zoom in and take closer look to these premises by neighborhoods. 
+
+\newpage
+# Bike Theft Percentage
+Next, we decide to explore the theft percentage by each neighborhood. We import the population data in each neighborhood from "open data Toronto". Ideally, we would want to obtain the total number of bicycles in each neighborhood and use that to calculate theft percentage, however it is unfeasible to obtain data as such. Since the bike is a means of transportation and it may always move from one neighborhood to another. Thus, in the following analysis, we make an assumption that for the same size of population, the number of persons who uses bike in daily life is identical. Therefore, we estimated it by using the number of bike theft cases divided by the population in each area. we regarded the percentage less than first quartile (< 0.00175) as Low-Level, first quartile (>=0.00175) to third quartile (< 0.009) as Medium-Level and the percentage greater than (>= 0.009) as High-Level. By calculating the bicycle theft percentage in each neighborhood, we would be able to learn which neighborhoods are considered high risk in bicycle theft.
+
+```{r, echo=FALSE, fig.height=4}
+Crime_inorder <- Neighbourhood_Crime_Rates%>%
+  arrange(Hood_ID)
+
+Crime_sub <- Crime_inorder %>% 
+  select(Hood_ID, Population, geometry) %>% 
+  mutate(Hood_ID = as.numeric(Hood_ID))
+
+bt_Hood_ID <- bt_raw %>% 
+  group_by(Hood_ID) %>% 
+  summarise(counts = n(), .groups = 'drop')
+
+theftperc <- bt_Hood_ID %>% 
+  left_join(Crime_sub, by = "Hood_ID") %>% 
+  mutate(theftperc = round(counts/Population, digits = 3)) %>% 
+  arrange(desc(theftperc))
+
+
+
+# Plot theftperc on map
+per_join <- theftperc %>% 
+  mutate(percentage_level = case_when(
+    theftperc < 0.00175 ~ "low", 
+    theftperc >= 0.00175 & theftperc < 0.009 ~ "medium",
+    theftperc >= 0.009 ~ "high",
+  )) %>% 
+  mutate(percentage_level = fct_relevel(percentage_level, "low", after = 2))
+  
+per_join %>% 
+  ggplot() +
+  geom_sf(aes(geometry = geometry, fill = percentage_level)) + 
+  scale_fill_brewer(palette = "Reds", direction =  -1) +
+  theme_map() + 
+  labs(title = "Which neighborhood has high bicycle theft percentage?",
+       caption = str_c("Created by: Ruei-Hung Chen, Zhenyu Xuan U of T\n", 
+                       "Source: Toronto Police Service, 
+                       Public safety Data Portal\n", 
+                       "Data as of March, 2nd, 2021")) + 
+  theme(plot.title = element_text(size = 14), plot.subtitle = element_text(size = 11)) +
+  theme(legend.position = "right")
+
+
+```
+We used luminous color (Red) from the darkest to lightest to stand for High level to Low level respectively. As our graph suggested, the percentage of bicycle theft is high in the Southern part of the GTA. This may suggest that people who live in this part of the region should pay extra attention to securing their bicycle storage at home to prevent the lost of their bicycle. 
+
+\newpage
+# Bike Theft Percentage + Bikeways 
+Looking back to the first graph that summarized the bicycle thefts in different premises, we saw that the second highest bicycle thefts occurred in the outdoor environments. We hypothesized that these thefts happen while people were commuting from one place to another. Therefore, we decided to study more carefully to regions where cyclists are most likely to show up. 
+
+We imported external data - "Bikeways" from Open data Toronto, in the hope to compare regions with more bike routes and regions with less bike routes. Ultimately, we wish to understand whether bike routes contributed in anyway to the bicycle theft percentage in the neighborhoods.
+
+```{r, echo=FALSE}
+# percentage theft + bikeways 
+ggplot() + 
+  geom_sf(data = per_join, aes(geometry = geometry, fill = percentage_level)) + 
+  geom_sf(data = Bikeways, aes(geometry = geometry)) + 
+  scale_fill_brewer(palette = "Reds", direction =  -1) + 
+  theme_void() + 
+  labs(title = "Does the existance of bike routes affect the percentage of bike theft? ",
+       subtitle = "By Neighbourhood", 
+       caption = str_c("Created by: Ruei-Hung Chen, Zhenyu Xuan U of T\n", 
+                       "Source: Transportation Services, 
+                       Open Data Toronto\n", 
+                       "Data as of March, 2nd, 2021")) + 
+  theme(legend.position = "right") + 
+  theme(plot.title = element_text(size = 14), plot.subtitle = element_text(size = 11))
+
+```
+
+In fact, as our visualization suggested, the area with the highest density of bike routes happen to overlay with the area with high percentage level of bicycle theft. Previously, we find that the Southern part of GTA is the area with the highest risk of bicycle theft in outdoor environment. We can clearly get the conclusion that the higher the density of Bikeways is, the higher the risk levels are for those areas.
+
+
+\newpage
+# 10 Busiest Interactions 
+We further explore the possible factors that may contribute to the high outdoor bicycle thefts. We collected the location of the 10 busiest traffic interactions in Toronto.  (https://www.insurancehotline.com/resources/top-10-traffic-heavy-intersections-in-toronto/)  
+
+```{r, echo= FALSE}
+# 10 busiest intersections in Toronto 
+int_1 <- st_point(x = c(-79.563050, 43.674430), dim = "XY")
+int_2 <- st_point(x = c(-79.494020, 43.704950), dim = "XY")
+int_3 <- st_point(x = c(-79.383330, 43.690380), dim = "XY")
+int_4 <- st_point(x = c(-79.415450, 43.779790), dim = "XY")
+int_5 <- st_point(x = c(-79.410954, 43.761601), dim = "XY")
+int_6 <- st_point(x = c(-79.370781, 43.672188), dim = "XY")
+int_7 <- st_point(x = c(-79.339554, 43.695710), dim = "XY")
+int_8 <- st_point(x = c(-79.339005, 43.658568), dim = "XY")
+int_9 <- st_point(x = c(-79.331388, 43.793245), dim = "XY")
+int_10 <- st_point(x = c(-79.18973, 43.767771), dim = "XY")
+int_all <- st_sfc(int_1, int_2, int_3, int_4, int_5, int_6, int_7, int_8, int_9, int_10)
+busy_int <- as.data.frame(int_all)
+
+# plot on map 
+ggplot() + 
+  geom_sf(data = per_join, aes(geometry = geometry, fill = percentage_level)) + 
+  geom_sf(data = busy_int, aes(geometry = int_all), size = 2) + 
+  scale_fill_brewer(palette = "Reds", direction =  -1) + 
+  theme_void() + 
+  labs(title = "Busiest Intersections in Toronto, Canada",
+       caption = str_c("Created by: Ruei-Hung Chen, Zhenyu Xuan U of T\n", 
+                       "Source: insurancehotline.com, 
+                       Top 10 Traffic-Heavy Intersections in Toronto\n", 
+                       "Data as of March, 2nd, 2021")) + 
+  theme(legend.position = "right")
+```
+
+However, the graph does not provide much information for us because these interactions are spread out too much and is not so helpful to explaining the high level of bicycle theft in the outdoor environment. 
+
+\newpage
+# Bike Theft Percentage + Bike Parking place 
+Besides the bikeways, we look at more possible risk factors that contribute to high level of bicycle theft in the Southern part of GTA. We hypothesized that if there is more bike parking lots in some hoods, it’s more convenient for persons there to travel or commute with bikes. Also, in our opinion, most bike theft cases happened during the parking time. The greater number of parking lots might increase the risk level of bike theft.
+
+Then, we imported external data - "Bike_Parkings" from Open data Toronto to study what resources does the Toronto government provide the cyclists to store and park their vehicles. 
+
+We input all the parking types – angled bike rack, bike corral, bike rack, bike shelter onto the neighborhood map of Toronto with risk levels. 
+
+```{r, echo=FALSE}
+# percentage theft + bike parking 
+ggplot() + 
+  geom_sf(data = per_join, aes(geometry = geometry, fill = percentage_level)) + 
+  geom_sf(data = bike_parking, aes(geometry = geometry, colour = PARKING_TYPE)) +
+  scale_fill_brewer(palette = "Reds", direction =  -1) + 
+  scale_colour_brewer(palette = "Greens") +
+  theme_void() + 
+  labs(title = "Does greater number of parking lots increase the risk level of bike theft?",
+       caption = str_c("Created by: Ruei-Hung Chen, Zhenyu Xuan U of T\n", 
+                       "Source: Transportation Services, 
+                       Open Data Toronto\n", 
+                       "Data as of March, 2nd, 2021")) + 
+  theme(legend.position = "right") + 
+  theme(plot.title = element_text(size = 14))
+  
+```
+
+As our data visualization showed, it’s obvious that almost all the bike parking areas are located in the hoods with high risk level of bike theft. While the other hoods with scarce parking lots are low in bike theft risk level. The graph verified our guess that the risk level of bike theft is higher if there are more parking areas in those neighborhoods.
+
+
+\newpage
+# Conclusion
+In conclusion, the Southern part of GTA is the region that experience the highest level of bicycle theft. Cyclist who travels to or live in the Southern GTA neighborhoods should be more careful due to the high-level bike theft risk. There are several factors lead to this situation, such as the high density of bike ways, the greater numbers of bike parking lots etc. 
+
+The bikes stolen cases mostly happened during both the outdoor and indoor parking time. In order to mitigate the risk of bike theft outside, although the government has done some things to help cyclists to store and park their bicycles while they are out, there's still a lot of room for improvements. For example, some of the highly used bike routes in the Southern GTA does not have facilities for cyclists to store their bicycles at all! So, we believe that if the facilities can be implemented at least evenly into the neighborhoods, it could dramatically improve the bicycle theft level in the Southern GTA area. In addition, for the bike theft cases happened indoor, the general cyclists should store their bike in their garages in houses and increase the number of closed-circuit televisions around the garage. With the improvement in monitoring and indoor security, the risk of bike theft during indoor parking time will probably alleviate.
+
